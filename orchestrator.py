@@ -5,12 +5,19 @@ import os
 import hashlib
 import time
 import multiprocessing
-import queue
 import random
 import shutil
 import run_handler
 import functools
 import yaml
+import datetime
+
+###############################################################
+# Print wrapper for verbose mode
+def vprint(*args, **kwargs):
+    print(str(datetime.datetime.now()), ">", *args, **kwargs)
+
+
 
 ###############################################################
 # Wrapper for methods related to contexts.
@@ -535,12 +542,20 @@ class ScriptOrchestrator():
     default_max_processes = 4
    
     # Initialze the orchestrator
-    def __init__(self, using_directory=None) -> None:
+    def __init__(self, 
+        using_directory : str = None,
+        verbose : bool = False,
+            ) -> None:
+
         self.tmp_directory = ScriptOrchestrator.tmp_directory if using_directory is None else using_directory
+        self.verbose = verbose
 
         if not os.path.exists(self.tmp_directory):
             os.mkdir(self.tmp_directory)  
         self.executable_list = []
+
+        if self.verbose:
+            vprint("STATUS:", "Started Pipeline")
 
     # Returns True if [string] encodes a definition
     def _is_definition(self, 
@@ -656,6 +671,8 @@ class ScriptOrchestrator():
     # Add all executables to [self.executable_list] with the correct merged
     # contexts. Also connect all pipes as specified.
     def queue_tasks(self) -> ScriptOrchestrator:
+        if self.verbose:
+            vprint("STATUS:", "Queueing Tasks")
         pipeline_level_executable_index = {}
 
         for block in self.pipeline.blocks:
@@ -696,6 +713,9 @@ class ScriptOrchestrator():
                                 else:
                                     for upstream_executable in pipeline_level_executable_index[script.takes]:
                                         upstream_executable.connect_upstream_of(executable)
+        
+        if self.verbose:
+            vprint("STATUS:", "Tasks Queued Successfully", end="")
 
         return self
 
@@ -719,22 +739,36 @@ class ScriptOrchestrator():
             self.tmp_directory, 
             self.pipeline.script_directory,
             n_times_before_timeout,
-            wait_time_between_tries)
+            wait_time_between_tries,
+            self.verbose)
 
         with multiprocessing.Pool(max_processes) as p:
             serials_to_run = [s for s in self.pipeline.serials if s >= from_serial]
             for serial in serials_to_run:
                 same_level_executables = [exec \
                     for exec in self.executable_list if exec.block_serial == serial]
+                if self.verbose: 
+                    print()
+                    blocks = set([exec.block_name for exec in same_level_executables])
+                    for block_name in list(blocks):
+                        vprint("STATUS:", block_name)
+
                 p.map(my_xrun, same_level_executables)
 
-        print(f"finished in {round(time.time() - start, 5)}")
+        if self.verbose:
+            print()
+            vprint(f"FINISHED in {round(time.time() - start, 3)}")
         return self
 
     # Remove some temporary files and directories used by the pipeline
     def clean(self) -> None:
+        if self.verbose:
+            vprint("STATUS:", "Cleaning")
         for executable in self.executable_list:
             executable.clean()
+        
+        if self.verbose:
+            vprint("STATUS:", "Finished Cleaning")
 
     # Remove full temporary directory
     def purge(self) -> None:
@@ -746,6 +780,7 @@ class ScriptOrchestrator():
         pipeline_script_directory : str, 
         n_times_before_timeout : int,
         wait_time_between_tries : int,
+        verbose : bool,
         executable : Executable
             ) -> ScriptOrchestrator:
 
@@ -770,7 +805,6 @@ class ScriptOrchestrator():
                 with open(pipe_name, 'r') as f:
                     pipe_json = json.load(f)
 
-
             return pipe_json
 
         file_pipe = FilePipe(tmp_directory, executable)
@@ -790,6 +824,9 @@ class ScriptOrchestrator():
         input_json = write_data_pipe_file(executable, file_pipe.into(), pipeline_script_directory)
 
         run_handler.run(input_json, file_pipe.out())
+
+        if verbose:
+            print('.', end="", flush=True)
             
         with open(file_pipe.out(), 'r') as f:
             data = f.read()

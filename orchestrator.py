@@ -173,7 +173,7 @@ class BlockHelper():
                 block_json['serial'],
                 block_json['description'],
                 block_json.get('context', ContextHelper.empty_context),
-                block_json.get('scripts', ScriptHelper.no_scripts)
+                block_json.get('runs', ScriptHelper.no_scripts)
             ))
         
         return blocks
@@ -194,8 +194,10 @@ class ScriptHelper():
     #   "path":         required <int/str>, the import path which can be 
     #                       used with the `import` or `__import__` 
     #                       commands to load the script as a module
-    #   "pipe_from":    required <int/str>, the [guid] of the (upstream) script from
-    #                       where data should be piped from
+    #   "takes":        optional <str>, the description of the return value for the 
+    #                       (upstream) script from where data should be piped from
+    #   "returns":      required <str>, description of the return value for this
+    #                       script
     @classmethod
     def parse(self, 
         scripts_json : list         # list of dicts with key:value pairs 
@@ -204,11 +206,11 @@ class ScriptHelper():
         scripts = []
         for script_json in scripts_json:
             scripts.append(Script(
-                script_json['name'],
-                script_json['guid'],
+                script_json['script'],
                 script_json['path'],
-                script_json['pipe_from'],
-                script_json.get('context', ContextHelper.empty_context)
+                script_json.get('context', ContextHelper.empty_context),
+                script_json['returns'],
+                script_json.get('takes', None)
             ))
         
         return scripts
@@ -220,34 +222,31 @@ class ScriptHelper():
 #
 # Attributes are:
 #   context_instance:   dict of parameters to supply the script
-#   script_name:        name of script
 #   script_guid:        guid of script
 #   script_path:        path required to import script
 #   block_name:         name of block containing script
 #   block_serial:       serial order of block
-#   iteration:          iteration of the pipeline
+#   version:            version of the pipeline
 #   tmp_directory:      path to the directory to store temp files
 class Executable():
     # Initialize instance attributes of the Executable (see above) 
     def __init__(self, 
             context_instance : dict, 
-            script_name : str, 
             script_guid : str, 
             script_path : str, 
             block_name : str, 
             block_serial : int, 
-            iteration : str, 
+            version : str, 
             pipeline_name : str, 
             tmp_directory : str
                 ) -> None:
 
         self.context_instance = context_instance
-        self.script_name = script_name
         self.script_guid = script_guid
         self.script_path = script_path
         self.block_name = block_name
         self.block_serial = block_serial
-        self.iteration = iteration
+        self.version = version
         self.pipeline_name = pipeline_name
         self.hash = self.calculate_hash()
         self.data_ingest_directory = tmp_directory + "/" + self.hash + "/"
@@ -308,8 +307,8 @@ class Executable():
     def __str__(self
         ) -> str:       # returns <str> representation of [self]
         
-        return f"{self.pipeline_name}({self.iteration})/{self.block_name}" \
-            f"/{self.script_name}({self.script_guid}):{self.script_path}\n" + \
+        return f"{self.pipeline_name}({self.version})/{self.block_name}" \
+            f"/{self.script_guid}:{self.script_path}\n" + \
             json.dumps(self.context_instance, indent=2)
 
     # Evaluate equality of executables
@@ -323,7 +322,6 @@ class Executable():
         return \
             self.context_instance == other.context_instance and \
             self.block_name == other.block_name and \
-            self.script_name == other.script_name and \
             self.script_guid == other.script_guid
 
 ###############################################################
@@ -355,7 +353,7 @@ class Pipe():
 #
 # Attributes are:
 #   name:               name of pipeline
-#   iterastion:         iteration of the current pipeline run
+#   version:            version of the current pipeline run
 #   script_directory:   root directory of the scripts which should be run
 #   context_json:       json representing global context for the pipeline
 #   blocks_json:        json list representing all blocks of the pipeline
@@ -365,14 +363,14 @@ class Pipe():
 class Pipeline():
     def __init__(self, 
         name : str,                 # name of pipeline
-        iteration : str,            # iteration of the current pipeline run
+        version : str,              # version of the current pipeline run
         script_directory : str,     # root directory to find scripts
         context_json : dict,        # global context of the pipeline, json specified
         blocks_json : list          # list of all blocks, json specified
             ) -> None:
 
         self.name = name
-        self.iteration = iteration
+        self.version = version
         self.script_directory = script_directory
         self.context_json = context_json
         self.flattened_contexts = ContextHelper.parse(context_json)
@@ -456,29 +454,30 @@ class Block():
 #                   which will be empty if there are no upstream scripts.
 #
 # Attributes are:
-#   name:               name of script
 #   guid:               globally unique identifier
 #   path:               path to import script via `import` or `__import__`
-#   pipe_from:          guid of script which is upstream of [self] and which will
-#                           send data to [self]
+#   takes:              description of return value of script which is upstream of 
+#                           [self] and which will send data to [self]
+#   returns:            description of the return value of [self]
 #   context_json:       json specifing the script level context
 #   flattened_contexts: list of all flat contexts which this script should be
 #                           run using
 class Script():
     def __init__(self,
-        name : str,             # name of script 
         guid : str,             # globally unique identifier 
         path : str,             # path to import script via `__import__` 
-        pipe_from : str,        # guid of upstream script 
-        context_json : dict     # dict of key:value parameters for script
+        context_json : dict,    # dict of key:value parameters for script
+        returns : str,          # description of data returned by script
+        takes : str = None      # description of data taken by script
             ) -> None:
             
-        self.name = name
+        self.name = "name"
         self.guid = guid
         self.path = path
-        self.pipe_from = pipe_from
         self.context_json = context_json
         self.flattened_contexts = ContextHelper.parse(context_json)
+        self.returns = returns
+        self.takes = takes
 
 ###############################################################
 # Retains information for data flowing into/out of a given script, as opposed to
@@ -549,7 +548,7 @@ class ScriptOrchestrator():
         val : str               # the value associated with [key] 
             ) -> bool:
 
-        return key[0] == "$" and val == "$definitions"
+        return val == "$see definitions"
 
     def _unpack_existing_definition(self, 
         input_context : dict,   # the context containing the definiton
@@ -562,7 +561,7 @@ class ScriptOrchestrator():
             print(f"exception: definition {key} referenced but not supplied in definitions")
             exit(1)
         
-        input_context[key[1:]] = definitions[key]
+        input_context[key] = definitions[key]
 
     # Unpack all definitions in some [input_context] by searching the [definitions] dict
     # for the key supplied
@@ -625,8 +624,8 @@ class ScriptOrchestrator():
 
         self.pipeline = Pipeline(
             name=data['name'], 
-            iteration=data['iteration'],
-            script_directory=data['script_directory'],
+            version=data['version'],
+            script_directory=data['script directory'],
             context_json=data.get('context', ContextHelper.empty_context),
             blocks_json=data.get('blocks', BlockHelper.no_blocks))
 
@@ -671,32 +670,31 @@ class ScriptOrchestrator():
                     for context_instance in script_level_flattened_contexts:
                         executable = Executable(
                             context_instance,
-                            script.name,
                             script.guid,
                             script.path,
                             block.name,
                             block.serial,
-                            self.pipeline.iteration,
+                            self.pipeline.version,
                             self.pipeline.name,
                             self.tmp_directory,
                         )
                         
                         if executable not in self.executable_list:
                             self.executable_list.append(executable)
-                            if pipeline_level_executable_index.get(script.guid, None) is None:
-                                pipeline_level_executable_index[script.guid] = []
-                            pipeline_level_executable_index[script.guid].append(executable)                    
+                            if pipeline_level_executable_index.get(script.returns, None) is None:
+                                pipeline_level_executable_index[script.returns] = []
+                            pipeline_level_executable_index[script.returns].append(executable)                    
                             
-                            if block_level_executable_index.get(script.guid, None) is None:
-                                block_level_executable_index[script.guid] = []
-                            block_level_executable_index[script.guid].append(executable)
+                            if block_level_executable_index.get(script.returns, None) is None:
+                                block_level_executable_index[script.returns] = []
+                            block_level_executable_index[script.returns].append(executable)
 
-                            if script.pipe_from != -1:
-                                if script.pipe_from in block_level_executable_index:
-                                    for upstream_executable in block_level_executable_index[script.pipe_from]:
+                            if script.takes:
+                                if script.takes in block_level_executable_index:
+                                    for upstream_executable in block_level_executable_index[script.takes]:
                                         upstream_executable.connect_upstream_of(executable)
                                 else:
-                                    for upstream_executable in pipeline_level_executable_index[script.pipe_from]:
+                                    for upstream_executable in pipeline_level_executable_index[script.takes]:
                                         upstream_executable.connect_upstream_of(executable)
 
         return self

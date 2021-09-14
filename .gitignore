@@ -1,6 +1,5 @@
-planning/
 test/
-runner.py
 __pycache__
-.orchestrator_temp
+.cue
 demo/
+*.egg-info

@@ -6,11 +6,12 @@ import hashlib
 import time
 import multiprocessing
 import shutil
-import run_handler
 import functools
 import yaml
 import datetime
 import difflib
+
+import cue.run_handler as run_handler
 
 ###############################################################
 # Print wrapper for verbose mode
@@ -26,6 +27,7 @@ def vprint(*args, **kwargs):
 # multiple values for each key (as a list of values) and will be expanded
 # automatically into a list of flat contexts (one value per key) that
 # encompasses all possible combinations of key:value pairs. 
+#
 class ContextHelper():
     # The empty context; for situations where no context is supplied by the json.
     empty_context = {}
@@ -168,6 +170,7 @@ class BlockHelper():
     #   "description":  required <str> describing the action of the block
     #   "context":      optional, context
     #   "scripts":      optional, scripts to be run inside this block
+    #
     @classmethod
     def parse(self, 
         blocks_json : list          # list of dicts containing required block info
@@ -237,18 +240,19 @@ class ScriptHelper():
 #   block_serial:       serial order of block
 #   version:            version of the pipeline
 #   tmp_directory:      path to the directory to store temp files
+#
 class Executable():
     # Initialize instance attributes of the Executable (see above) 
     def __init__(self, 
-            context_instance : dict, 
-            script_guid : str, 
-            script_path : str, 
-            block_name : str, 
-            block_serial : int, 
-            version : str, 
-            pipeline_name : str, 
-            tmp_directory : str
-                ) -> None:
+        context_instance : dict, 
+        script_guid : str, 
+        script_path : str, 
+        block_name : str, 
+        block_serial : int, 
+        version : str, 
+        pipeline_name : str, 
+        tmp_directory : str
+            ) -> None:
 
         self.context_instance = context_instance
         self.script_guid = script_guid
@@ -340,7 +344,8 @@ class Executable():
 #
 # Attributes are:
 #   pipe_from_obj:      the upstream executable connected by the pipe
-#   to_obj:             the downstream executable connected by the pipe 
+#   to_obj:             the downstream executable connected by the pipe
+#
 class Pipe():
     def __init__(self,
         pipe_from_obj : Executable,     # upstream executable
@@ -372,6 +377,7 @@ class Pipe():
 #   blocks:             list of <Block> entities
 #   serials:            ascending ordered list of all serial values
 #   plaintext:          plaintext of the json
+#
 class Pipeline():
     def __init__(self, 
         name : str,                 # name of pipeline
@@ -496,6 +502,7 @@ class Pipeline():
 ###############################################################
 # Wrapper for a list of errors (format/syntax) which may be encountered when 
 # validating a pipeline
+#
 class PipelineErrorList():
     def __init__(self) -> None:
         self.items = []
@@ -512,7 +519,7 @@ class PipelineErrorList():
     def empty(self):
         return len(self.items) == 0
 
-
+# TODO: comment
 class Errors():
     # context should be +- 2 lines
     class PipelineError():
@@ -569,6 +576,7 @@ class Errors():
 
                     return "\n".join(lines[start : end]), start + 1, i + 1
 
+    # TODO: comment
     class ScriptNameCollision(PipelineError):
         def __init__(self, 
             offending_input : str,
@@ -643,7 +651,8 @@ class Errors():
 #                       processes
 #   description:    descripton of the Block's operation and purpose
 #   context_json:   json encoding the block level context
-#   scripts_json:   json list containing all scripts to process in the block 
+#   scripts_json:   json list containing all scripts to process in the block
+#
 class Block():
     def __init__(self, 
         name : str,             # the name of the block
@@ -702,6 +711,7 @@ class Block():
 #   context_json:       json specifing the script level context
 #   flattened_contexts: list of all flat contexts which this script should be
 #                           run using
+#
 class Script():
     def __init__(self,
         guid : str,             # globally unique identifier 
@@ -728,6 +738,7 @@ class Script():
 #   tmp_directory:      directory to store this temporary data
 #   name:               hash name of executable which should only be used through
 #                           `self.into` and `self.out` methods
+#
 class FilePipe():
     def __init__(self, 
         tmp_directory : str,        # directory to store data
@@ -770,8 +781,9 @@ class FilePipe():
 #   executable_list:        list of all executables, roughly in order, which should
 #                               be run as part of the pipeline  
 #   data:                   the json representation of the pipeline
+#
 class ScriptOrchestrator():
-    tmp_directory = "./.orchestrator_temp/"
+    tmp_directory = "./.cue/"
     default_n_times_before_timeout = 10
     default_wait_time_between_tries = .05
     default_max_processes = 4

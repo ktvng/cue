@@ -1,11 +1,25 @@
 import getopt
 import sys
-from orchestrator import ScriptOrchestrator
+from cue.orchestrator import ScriptOrchestrator
+
+def run():
+    main(sys.argv[1:])
 
 def main(argv):
     # -r <root> -i [pipeline] -c 
     try:
-        opts, args = getopt.getopt(argv, "i:cn:w:p:f:d:v", ['input=', 'n_times_before_timeout=', 'wait_time_between_tries=', 'max_processes=', 'from=', 'clean', 'dir=', 'verbose'])
+        opts, args = getopt.getopt(argv, "i:cn:w:p:f:d:vh", 
+            [
+                'input=', 
+                'n_times_before_timeout=', 
+                'wait_time_between_tries=', 
+                'max_processes=', 
+                'from=', 
+                'clean', 
+                'dir=', 
+                'verbose',
+                'help'
+            ])
 
     except:
         exit(2)
@@ -33,6 +47,9 @@ def main(argv):
             tmp_dir = arg + "/"
         elif opt in ['-v', '--verbose']:
             verbose = True
+        elif opt in ['-h', '--help']:
+            # TODO: implement
+            exit(0)
 
     if path_to_pipeline_json is None:
         print("exception: expected json filename with [-i]")
@@ -44,6 +61,3 @@ def main(argv):
 
     so = ScriptOrchestrator(using_directory=tmp_dir, verbose=verbose).read(yaml_file=path_to_pipeline_json).queue_tasks().run(given=options)
     so.clean()
-    
-if __name__ == "__main__":
-    main(sys.argv[1:])

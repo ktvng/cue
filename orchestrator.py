@@ -10,7 +10,7 @@ import random
 import shutil
 import run_handler
 import functools
-import typing
+import yaml
 
 ###############################################################
 # Wrapper for methods related to contexts.
@@ -634,11 +634,22 @@ class ScriptOrchestrator():
     
     # Read from [path_to_file] to load a json representing a pipeline
     def read(self, 
-        path_to_file : str
+        yaml_file : str = "",       # yaml file to be read
+        json_file : str = "",       # json file to be read
             ) -> ScriptOrchestrator:
-        
+
+        if json_file:
+            load_method = json.load
+            path_to_file = json_file
+        elif yaml_file:
+            load_method = yaml.safe_load
+            path_to_file = yaml_file
+        else:
+            print("exception: read method incorrect usage; use either one of json/yaml")
+            exit(2)
+
         with open(path_to_file) as f:
-            self.data = json.load(f)
+            self.data = load_method(f)
         self.parse(self.data)
         return self 
 

@@ -39,7 +39,7 @@ def main(argv):
         ScriptOrchestrator(using_directory=tmp_dir).purge()
         exit(0)
 
-    so = ScriptOrchestrator(using_directory=tmp_dir).read(path_to_pipeline_json).queue_tasks().run(given=options)
+    so = ScriptOrchestrator(using_directory=tmp_dir).read(yaml_file=path_to_pipeline_json).queue_tasks().run(given=options)
     so.clean()
     
 if __name__ == "__main__":

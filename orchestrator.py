@@ -5,7 +5,10 @@ import subprocess
 import hashlib
 import time
 import threading
+import queue
 import random
+import shutil
+import run_handler
 
 class ContextHelper():
     @classmethod
@@ -114,16 +117,15 @@ class Executable():
         self.iteration = iteration
         self.pipeline_name = pipeline_name
         self.hash = self.calculate_hash()
-        self.data_ingest_filename = tmp_directory + "/q" + self.hash + ".in"
-        with open(self.data_ingest_filename, 'w') as f:
-            f.write("")
+        self.data_ingest_directory = tmp_directory + "/" + self.hash + "/"
+        if not os.path.exists(self.data_ingest_directory):
+            os.mkdir(self.data_ingest_directory)
 
         self.n_pipes_in = 0
         self.outgoing_pipes = []
 
     def is_waiting_for_upstream(self):
-        with open(self.data_ingest_filename, 'r') as f:
-            return self.n_pipes_in < len(f.readlines())
+        return self.n_pipes_in > len(os.listdir(self.data_ingest_directory))
 
     def calculate_hash(self):
         hasher = hashlib.sha1()
@@ -141,7 +143,7 @@ class Executable():
             pipe.transfer(data)
 
     def clean(self):
-        os.remove(self.data_ingest_filename)
+        shutil.rmtree(self.data_ingest_directory)
 
     def __str__(self):
         return f"{self.pipeline_name}({self.iteration})/{self.block_name}/{self.script_name}({self.script_guid}):{self.script_path}\n" + \
@@ -166,8 +168,8 @@ class Pipe():
 
     def transfer(self, data):
         self.cached_data = data
-        with open(self.to_obj.data_ingest_filename, 'a') as f:
-            f.write(data + "\n")
+        with open(self.to_obj.data_ingest_directory + self.pipe_from_obj.hash, 'w') as f:
+            f.write(data)
 
 class Pipeline():
     def __init__(self, name, iteration, root_directory, context_json, blocks_json):
@@ -217,16 +219,77 @@ class FilePipe():
         os.remove(self.into())
         os.remove(self.out())
 
+class Executor(threading.Thread):
+    tmp_directory = "./.scriptorchestrator_tmp/"
+    n_times_before_timeout = 20
+    waittime_after_timeout = .1
+
+    def __init__(self, id, task_q, pipeline_root_directory):
+        threading.Thread.__init__(self)
+        self.id = id
+        self.task_q = task_q
+        self.pipeline_root_directory = pipeline_root_directory
+
+    def run(self):
+        while not self.task_q.empty():
+            try:
+                executable = self.task_q.get()
+            except:
+                return
+
+            i = 0
+            while i < self.n_times_before_timeout:
+                if executable.is_waiting_for_upstream():
+                    time.sleep(self.waittime_after_timeout)
+                    i += 1
+                else:
+                    break
+
+            if i == self.n_times_before_timeout:
+                print("failed script:")
+                print(str(executable))
+                exit(1)
+
+            file_pipe = FilePipe(self.tmp_directory, executable)
+            input_json = self.write_data_pipe_file(executable, file_pipe.into())
+
+            # bash_cmd = f"python3 run_handler.py -i {file_pipe.into()} -o {file_pipe.out()}"
+            # subprocess.run(bash_cmd.split())
+            run_handler.run(input_json, file_pipe.out())
+
+            with open(file_pipe.out(), 'r') as f:
+                data = f.read()
+
+            file_pipe.clean()
+            executable.send(data)
+
+    def write_data_pipe_file(self, executable, pipe_name):
+        received_packages = []
+        for filename in os.listdir(executable.data_ingest_directory):
+            with open(executable.data_ingest_directory + filename, 'r') as f:
+                received_packages.append(f.read())
+
+        pipe_json = {
+            "root_directory": self.pipeline_root_directory,
+            "script_path": executable.script_path,
+            "params": executable.context_instance,
+            "data": received_packages
+        }
+    
+        with open(pipe_name, 'w') as f:
+            f.write(json.dumps(pipe_json))
+
+        return pipe_json
+
 class ScriptOrchestrator():
     tmp_directory = "./.scriptorchestrator_tmp/"
-    n_times_before_timeout = 4
-    waitime_after_timeout = .4
-    max_threads = 8
+    max_threads = 16
     
     def __init__(self):
         if not os.path.exists(self.tmp_directory):
             os.mkdir(self.tmp_directory)  
-        self.executable_q = []
+        self.executable_q = queue.Queue()
+        self.executable_list = []
 
     def parse(self, data=None):
         data = self.data if data is None else data
@@ -269,8 +332,8 @@ class ScriptOrchestrator():
                             self.tmp_directory,
                         )
                         
-                        if executable not in self.executable_q:
-                            self.executable_q.append(executable)
+                        if executable not in self.executable_list:
+                            self.executable_list.append(executable)
                             if pipeline_level_executable_index.get(script.guid, None) is None:
                                 pipeline_level_executable_index[script.guid] = []
                             pipeline_level_executable_index[script.guid].append(executable)                    
@@ -287,58 +350,25 @@ class ScriptOrchestrator():
                                     for upstream_executable in pipeline_level_executable_index[script.pipe_from]:
                                         upstream_executable.connect_upstream_of(executable)
 
-
         return self
 
-    def write_data_pipe_file(self, executable, pipe_name):
-        with(open(executable.data_ingest_filename, 'r')) as f:
-            received_packages = list(map(lambda x: x.strip(), f.readlines()))
-
-        pipe_json = {
-            "root_directory": self.pipeline.root_directory,
-            "script_path": executable.script_path,
-            "params": executable.context_instance,
-            "data": received_packages
-        }
-    
-        with open(pipe_name, 'w') as f:
-            f.write(json.dumps(pipe_json))
-
-    def run_executable(self, executable):
-        i = 0
-        while i < self.n_times_before_timeout:
-            if executable.is_waiting_for_upstream():
-                print("waiting for pipe")
-                time.sleep(self.waitime_after_timeout)
-                i += 1
-            else:
-                break
-
-        if i == self.n_times_before_timeout:
-            print("failed script:")
-            print(str(executable))
-            exit(1)
-
-        file_pipe = FilePipe(self.tmp_directory, executable)
-        self.write_data_pipe_file(executable, file_pipe.into())
-
-        bash_cmd = f"python3 run_handler.py -i {file_pipe.into()} -o {file_pipe.out()}"
-        subprocess.run(bash_cmd.split())
-
-        with open(file_pipe.out(), 'r') as f:
-            data = f.read()
-
-        file_pipe.clean()
-        executable.send(data)
-
     def run(self):
-        for executable in self.executable_q:
-            # t = threading.Thread(target=self.run_executable, args=(executable,))
-            # t.start() 
-            self.run_executable(executable)
+        start = time.time()
+
+        for task in self.executable_list:
+            self.executable_q.put(task)
+
+        task_threads = [Executor(i, self.executable_q, self.pipeline.root_directory) for i in range(self.max_threads)]
+        for t in task_threads:
+            t.start()
+        
+        for t in task_threads:
+            t.join()
+
+        print(time.time() - start)
 
     def clean(self):
-        for executable in self.executable_q:
+        for executable in self.executable_list:
             executable.clean()
 
         os.removedirs(self.tmp_directory)

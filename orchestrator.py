@@ -5,18 +5,17 @@ import os
 import hashlib
 import time
 import multiprocessing
-import random
 import shutil
 import run_handler
 import functools
 import yaml
 import datetime
+import difflib
 
 ###############################################################
 # Print wrapper for verbose mode
 def vprint(*args, **kwargs):
     print(str(datetime.datetime.now()), ">", *args, **kwargs)
-
 
 
 ###############################################################
@@ -150,6 +149,7 @@ class ContextHelper():
 
         return flattened_contexts
 
+
 ###############################################################
 # Wrapper for methods related to blocks. 
 class BlockHelper():
@@ -184,6 +184,7 @@ class BlockHelper():
             ))
         
         return blocks
+
 
 ###############################################################
 # Wrapper for methods relating to scripts, i.e. parsing
@@ -221,6 +222,7 @@ class ScriptHelper():
             ))
         
         return scripts
+
 
 ###############################################################
 # Representation of a executable script; contains all required information
@@ -331,6 +333,7 @@ class Executable():
             self.block_name == other.block_name and \
             self.script_guid == other.script_guid
 
+
 ###############################################################
 # Represents a direct pipe between two executables that can transfer data
 # unidirectionally
@@ -355,6 +358,7 @@ class Pipe():
         with open(self.to_obj.data_ingest_directory + self.pipe_from_obj.hash, 'w') as f:
             f.write(data)
 
+
 ###############################################################
 # Encapsulates the entire script pipeline
 #
@@ -367,13 +371,15 @@ class Pipe():
 #   flattened_contexts: list of flattened global pipeline contexts
 #   blocks:             list of <Block> entities
 #   serials:            ascending ordered list of all serial values
+#   plaintext:          plaintext of the json
 class Pipeline():
     def __init__(self, 
         name : str,                 # name of pipeline
         version : str,              # version of the current pipeline run
         script_directory : str,     # root directory to find scripts
         context_json : dict,        # global context of the pipeline, json specified
-        blocks_json : list          # list of all blocks, json specified
+        blocks_json : list,         # list of all blocks, json specified
+        plaintext : str             # plaintext of the json
             ) -> None:
 
         self.name = name
@@ -384,6 +390,7 @@ class Pipeline():
         self.blocks_json = blocks_json
         self.blocks = BlockHelper.parse(blocks_json)
         self.serials = self._get_block_serials()
+        self.plaintext = plaintext
 
     # Returns an ascending ordered list of all serial numbers which appear
     # in the pipeline
@@ -396,6 +403,231 @@ class Pipeline():
         serials.sort()
 
         return serials
+
+    # Validate a parsed pipeline file is formatted correctly
+    def validate(self) -> PipelineErrorList:
+        errors = PipelineErrorList() 
+        self._validate_takes_keyword(errors)
+        self._validate_script_name_uniqueness(errors)
+
+        self._validate_module_load(errors)
+
+        return errors
+
+    def apply_f_over_pipeline(self, f):
+        self._apply_f_over_obj(f, "", self.blocks_json)
+
+    def _apply_f_over_obj(self, f, key, obj):
+        if isinstance(obj, dict):
+            for key, val in obj.items():
+                self._apply_f_over_obj(f, key, val)
+        elif isinstance(obj, list):
+            for child_obj in obj:
+                self._apply_f_over_obj(f, "", child_obj)
+        elif isinstance(obj, str):
+            f(key, obj)
+
+    def _validate_script_name_uniqueness(self, errors : PipelineErrorList) -> None:
+        script_names = {}
+        def hash_script_names(key, val):
+            if key == 'script':
+                if script_names.get(val, 0) == 0:
+                    script_names[val] = 1
+                else:
+                    script_names[val] += 1
+            
+        self.apply_f_over_pipeline(hash_script_names)
+        for key, val in script_names.items():
+            if val > 1:
+                errors.add(Errors.ScriptNameCollision(
+                    offending_input=key,
+                    plaintext=self.plaintext))
+
+    def _closest_keyword(self, key, other_keys):
+        return difflib.get_close_matches(key, other_keys, n=1)[0]
+
+    def _validate_takes_keyword(self, errors : PipelineErrorList) -> None:
+        returns_values = {}
+        def hash_returns_values(key, val):
+            if key == 'returns':
+                returns_values[val] = True
+
+        takes_values = {}
+        def hash_takes_values(key, val):
+            if key == 'takes':
+                takes_values[val] = True
+
+        self.apply_f_over_pipeline(hash_returns_values)
+        self.apply_f_over_pipeline(hash_takes_values)
+
+        for takes_value in takes_values:
+            if takes_value not in returns_values.keys():
+                errors.add(Errors.ScriptInput(
+                    offending_input=takes_value,
+                    suggestion=self._closest_keyword(takes_value, returns_values.keys()),
+                    plaintext=self.plaintext))
+
+    def _validate_module_load(self, errors : PipelineErrorList) -> None:
+        script_modules = []
+
+        def get_script_modules(key, val):
+            if key == 'path':
+                script_modules.append(val)
+
+        self.apply_f_over_pipeline(get_script_modules)
+
+        sys.path.insert(1, self.script_directory)
+        for script_path in script_modules:
+            try:
+                script_exe = __import__(script_path, fromlist=[None])
+                if not hasattr(script_exe, 'parameters') or \
+                   not (hasattr(script_exe, 'run') and callable(getattr(script_exe, 'run'))):
+                        errors.add(Errors.ModuleFormatException(
+                        offending_input=script_path,
+                        plaintext=self.plaintext))
+
+            except:
+                errors.add(Errors.ModuleLoadException(
+                    offending_input=script_path,
+                    suggestion=self.script_directory,
+                    plaintext=self.plaintext))
+
+
+###############################################################
+# Wrapper for a list of errors (format/syntax) which may be encountered when 
+# validating a pipeline
+class PipelineErrorList():
+    def __init__(self) -> None:
+        self.items = []
+
+    def __getitem__(self, i) -> Errors.PipelineError:
+        return self.items[i]
+    
+    def __iter__(self):
+        return self.items.__iter__()
+    
+    def add(self, error : Errors.PipelineError) -> None:
+        self.items.append(error)
+
+    def empty(self):
+        return len(self.items) == 0
+
+
+class Errors():
+    # context should be +- 2 lines
+    class PipelineError():
+        def __init__(self,
+            name : str,         # name of error
+            info : str          # content of error
+                ) -> None:
+
+            self.name = name
+            self.info = info
+            self.location = "?"
+            self.starting_line = "?"
+            self.details = "?"
+            self.context = "\n\n\n"
+            self.suggestion = "Sorry, we don't have any suggestions for a fix"
+
+        def __str__(self) -> str:
+            return \
+                "=" * 64 + "\n" + \
+                self.fit(f"{self.name}Exception: {self.info}", indent=0) + "\n" + \
+                self.fit(f"At Line {self.location}: {self.details}", indent=2) + "\n" + \
+                self.fit(f"Tip: {self.suggestion}") + "\n" + \
+                self.indent_and_style_context() + "\n"
+
+        def indent_and_style_context(self) -> str:
+            lines = self.context.split('\n')
+            styled_lines = [f"    {i+self.starting_line}\t| {line}"for i, line in enumerate(lines)]
+            return "\n".join(styled_lines)
+
+        def fit(self, line, indent=2) -> str:
+            limit = 64
+            lines = []
+            current_line = ""
+            for word in line.split():
+                if len(word + current_line) > limit:
+                    lines.append(" " * indent + current_line)
+                    current_line = word + " "
+                else:
+                    current_line += word + " "
+
+            lines.append(" " * indent + current_line)
+            
+            return "\n".join(lines) + "\n"
+
+        def find_source(self, 
+            offending_input : str,
+            plaintext : str
+                ) -> tuple:
+            lines = plaintext.split('\n')
+            for i, line in enumerate(lines):
+                if offending_input in line:
+                    start = i - 2 if i - 2 >= 0 else 0
+                    end = i + 3 if i + 3 <= len(lines) else len(lines)
+
+                    return "\n".join(lines[start : end]), start + 1, i + 1
+
+    class ScriptNameCollision(PipelineError):
+        def __init__(self, 
+            offending_input : str,
+            plaintext : str
+                ) -> None:
+            
+            super().__init__("DuplicateScriptName", "script name already in use")
+            self.details = f"script names must be unique identifiers, but '{offending_input}'" \
+                " is used elsewhere"
+            self.suggestion = f"Consider adding a numeric suffix to distinguish between scripts with" \
+                " the same name."
+            self.context, self.starting_line, self.location = \
+                self.find_source(offending_input, plaintext)
+
+
+    class ScriptInput(PipelineError):
+        def __init__(self, 
+            offending_input : str,
+            suggestion : str, 
+            plaintext : str,
+                ) -> None:
+
+            super().__init__("ScriptInput", "cannot resolve script input")
+            self.offending_input = offending_input
+            self.details = f"'{offending_input}' could not be resolved as the output of another script"
+            self.suggestion = f"Did you mean '{suggestion}' instead of '{offending_input}'?"
+            self.context, self.starting_line, self.location = \
+                self.find_source(offending_input, plaintext)
+
+    class ModuleLoadException(PipelineError):
+        def __init__(self,
+            offending_input : str,
+            suggestion : str,
+            plaintext : str,
+                ) -> None:
+
+            super().__init__("ModuleLoad", "cannot load module")
+            self.offending_input = offending_input
+            self.details = f"could not load '{offending_input}' as a python module"
+            self.suggestion = f"Make sure the import path is correct and ensure that " \
+                f" '{offending_input}' exists and that {suggestion} is the right directory."
+            self.context, self.starting_line, self.location = \
+                self.find_source(offending_input, plaintext)
+    
+    class ModuleFormatException(PipelineError):
+        def __init__(self,
+            offending_input : str,
+            plaintext : str
+                ) -> None:
+
+            super().__init__("ModuleFormat", "cannot interpret module code")
+            self.offending_input = offending_input
+            self.details = f"could not find the either the run method or the parameters" \
+                f" field in '{offending_input}"
+            self.suggestion = f"ensure that '{offending_input}' has a list 'parameters = [...]' " \
+                f" and a 'def run(params, data):' method." 
+            self. context, self.starting_line, self.location = \
+                self.find_source(offending_input, plaintext)
+
 
 ###############################################################
 # Encapsulates all information required in a block
@@ -428,6 +660,7 @@ class Block():
         self.flattened_contexts = ContextHelper.parse(context_json)
         self.scripts_json = scripts_json
         self.scripts = ScriptHelper.parse(scripts_json)
+
 
 ###############################################################
 # Encapsulates all information required in a script
@@ -486,6 +719,7 @@ class Script():
         self.returns = returns
         self.takes = takes
 
+
 ###############################################################
 # Retains information for data flowing into/out of a given script, as opposed to
 # <Pipes> which represent information flowing between two different scripts.
@@ -523,6 +757,7 @@ class FilePipe():
 
         os.remove(self.into())
         os.remove(self.out())
+
 
 ###############################################################
 # Execute a pipeline and orchestrate all component processes in a safe
@@ -629,20 +864,23 @@ class ScriptOrchestrator():
             
     # Parse [data] a json representation of a pipeline, or use [self.data] a json
     # has already been read
-    def parse(self, 
-        data : dict = None
-            ) -> ScriptOrchestrator:
+    def parse(self) -> ScriptOrchestrator:
 
-        data = self.data if data is None else data
-
-        self._preprocess_definitions(data)
+        self._preprocess_definitions(self.data)
 
         self.pipeline = Pipeline(
-            name=data['name'], 
-            version=data['version'],
-            script_directory=data['script directory'],
-            context_json=data.get('context', ContextHelper.empty_context),
-            blocks_json=data.get('blocks', BlockHelper.no_blocks))
+            name=self.data['name'], 
+            version=self.data['version'],
+            script_directory=self.data['script directory'],
+            context_json=self.data.get('context', ContextHelper.empty_context),
+            blocks_json=self.data.get('blocks', BlockHelper.no_blocks),
+            plaintext=self.plaintext)
+
+        errors = self.pipeline.validate()
+        if not errors.empty():
+            for error in errors:
+                print(error)
+            exit(1)
 
         return self
     
@@ -662,9 +900,14 @@ class ScriptOrchestrator():
             print("exception: read method incorrect usage; use either one of json/yaml")
             exit(2)
 
-        with open(path_to_file) as f:
+        with open(path_to_file, 'r') as f:
             self.data = load_method(f)
-        self.parse(self.data)
+
+        with open(path_to_file, 'r') as f:
+            self.plaintext = f.read()
+
+        self.parse()
+
         return self 
 
     # TODO: refactor into smaller methods
@@ -676,13 +919,15 @@ class ScriptOrchestrator():
         pipeline_level_executable_index = {}
 
         for block in self.pipeline.blocks:
-            block_level_flattened_contexts = ContextHelper.merge(self.pipeline.flattened_contexts, block.flattened_contexts)
+            block_level_flattened_contexts = \
+                ContextHelper.merge(self.pipeline.flattened_contexts, block.flattened_contexts)
 
             for block_level_context_instance in block_level_flattened_contexts:
                 block_level_executable_index = {}
 
                 for script in block.scripts:
-                    script_level_flattened_contexts = ContextHelper.merge([block_level_context_instance], script.flattened_contexts)
+                    script_level_flattened_contexts = \
+                        ContextHelper.merge([block_level_context_instance], script.flattened_contexts)
 
                     for context_instance in script_level_flattened_contexts:
                         executable = Executable(
@@ -832,3 +1077,4 @@ class ScriptOrchestrator():
             data = f.read()
 
         executable.send(data)
+

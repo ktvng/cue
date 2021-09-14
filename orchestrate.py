@@ -22,7 +22,7 @@ def main(argv):
         elif opt in ['-n', '--n_times_before_timeout']:
             options['n_times_before_timeout'] = int(arg)
         elif opt in ['-w', '--wait_time_between_tries']:
-            options['wait_time_between_tries'] = int(arg)
+            options['wait_time_between_tries'] = float(arg)
         elif opt in ['-p', '--max_processes']:
             options['max_processes'] = int(arg)
         elif opt in ['-f', '--from']:

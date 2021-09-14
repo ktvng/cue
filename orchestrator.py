@@ -757,7 +757,7 @@ class ScriptOrchestrator():
 
         if self.verbose:
             print()
-            vprint(f"FINISHED in {round(time.time() - start, 3)}")
+            vprint(f"STATUS: Finished in {round(time.time() - start, 3)}")
         return self
 
     # Remove some temporary files and directories used by the pipeline

@@ -1,1 +1,4 @@
 planning/
+test/
+runner.py
+__pycache__

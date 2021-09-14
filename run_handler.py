@@ -4,7 +4,7 @@ import json
 
 def run(input_json, output_filename):
     sys.path.insert(1, input_json['script_directory'])
-    script_exe = __import__(input_json['script_path'])
+    script_exe = __import__(input_json['script_path'], fromlist=[None])
     data = script_exe.run(input_json['params'], input_json['data'])
 
     if data is None:

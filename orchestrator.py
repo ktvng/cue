@@ -35,9 +35,11 @@ class ContextHelper():
         flattened_contexts = [{}]
         for key, val in context.items():
             if isinstance(val, list):
-                flattened_contexts = cls.expand_parameter_list_into(flattened_contexts, key, val)
+                flattened_contexts = cls. \
+                    expand_parameter_list_into(flattened_contexts, key, val)
             elif isinstance(val, dict):
-                flattened_contexts = cls.expand_parameter_range_into(flattened_contexts, key, val)
+                flattened_contexts = cls. \
+                    expand_parameter_range_into(flattened_contexts, key, val)
             else:
                 for instance in flattened_contexts:
                     instance.update(ContextHelper.unpair(key, val))
@@ -258,8 +260,13 @@ class Executable():
 
     # True if [self] executable is still waiting for upstream data to
     # be propogated to it
-    def is_waiting_for_upstream(self
-        ) -> bool: 
+    def is_waiting_for_upstream(self,
+        file_pipe : FilePipe        # file_pipe 
+            ) -> bool: 
+
+        if os.path.getsize(file_pipe.into()) != 0:
+            return False
+
         return self.n_pipes_in > len(os.listdir(self.data_ingest_directory))
 
     # Get the run-invariant hash code which uniquely refers to this
@@ -301,7 +308,8 @@ class Executable():
     def __str__(self
         ) -> str:       # returns <str> representation of [self]
         
-        return f"{self.pipeline_name}({self.iteration})/{self.block_name}/{self.script_name}({self.script_guid}):{self.script_path}\n" + \
+        return f"{self.pipeline_name}({self.iteration})/{self.block_name}" \
+            f"/{self.script_name}({self.script_guid}):{self.script_path}\n" + \
             json.dumps(self.context_instance, indent=2)
 
     # Evaluate equality of executables
@@ -486,9 +494,11 @@ class FilePipe():
         executable : Executable     # executable script which is wrapped
             ) -> None:
 
-        self.name = tmp_directory + "pipe" + executable.hash
-        with open(self.into(), 'w') as f:
-            f.write("")
+        self.name = tmp_directory + "cache" + executable.hash
+        
+        if not os.path.exists(self.into()):
+            with open(self.into(), 'w') as f:
+                f.write("")
 
         with open(self.out(), 'w') as f:
             f.write("")
@@ -502,7 +512,9 @@ class FilePipe():
         return self.name + ".out"
 
     # Remove all files used by [self]
-    def clean(self) -> None:
+    def clean(self,
+        ) -> None:
+
         os.remove(self.into())
         os.remove(self.out())
 
@@ -519,7 +531,9 @@ class FilePipe():
 #   data:                   the json representation of the pipeline
 class ScriptOrchestrator():
     tmp_directory = "./.scriptorchestrator_tmp/"
-    max_processes = 8
+    default_n_times_before_timeout = 10
+    default_wait_time_between_tries = .05
+    default_max_processes = 4
    
     # Initialze the orchestrator by creating the temporary directory
     def __init__(self):
@@ -556,7 +570,7 @@ class ScriptOrchestrator():
     # TODO: refactor into smaller methods
     # Add all executables to [self.executable_list] with the correct merged
     # contexts. Also connect all pipes as specified.
-    def queue_tasks(self) -> None:
+    def queue_tasks(self) -> ScriptOrchestrator:
         pipeline_level_executable_index = {}
 
         for block in self.pipeline.blocks:
@@ -602,68 +616,98 @@ class ScriptOrchestrator():
         return self
 
     # Run all executables by serial order using multiple worker processes
-    def run(self) -> None:
+    def run(self,
+        given : dict = {}
+            ) -> ScriptOrchestrator:
+
+        n_times_before_timeout = \
+            given.get('n_times_before_timeout', self.default_n_times_before_timeout)
+        wait_time_between_tries = \
+            given.get('wait_time_between_tries', self.default_wait_time_between_tries)
+        max_processes = \
+            given.get('max_processes', self.default_max_processes)
+        from_serial = \
+            given.get('from', self.pipeline.serials[0])
+
         start = time.time()
-        my_xrun = functools.partial(xrun, self.tmp_directory, self.pipeline.script_directory)
-        with multiprocessing.Pool(self.max_processes) as p:
-            for serial in self.pipeline.serials:
-                same_level_executables = [exec for exec in self.executable_list if exec.block_serial == serial]
+        my_xrun = functools.partial(
+            self._run, 
+            self.tmp_directory, 
+            self.pipeline.script_directory,
+            n_times_before_timeout,
+            wait_time_between_tries)
+
+        with multiprocessing.Pool(max_processes) as p:
+            serials_to_run = [s for s in self.pipeline.serials if s >= from_serial]
+            for serial in serials_to_run:
+                same_level_executables = [exec \
+                    for exec in self.executable_list if exec.block_serial == serial]
                 p.map(my_xrun, same_level_executables)
 
-        print(time.time() - start)
+        print(f"finished in {round(time.time() - start, 5)}")
+        return self
 
-    # Remove all temporary files and directories used by the pipeline
+    # Remove some temporary files and directories used by the pipeline
     def clean(self) -> None:
         for executable in self.executable_list:
             executable.clean()
 
-        os.removedirs(self.tmp_directory)
+    # Remove full temporary directory
+    def purge(self) -> None:
+        shutil.rmtree(self.tmp_directory)
+
+    # to run a script
+    def _run(self, 
+        tmp_directory : str, 
+        pipeline_script_directory : str, 
+        n_times_before_timeout : int,
+        wait_time_between_tries : int,
+        executable : Executable
+            ) -> ScriptOrchestrator:
+
+        # write data to pipeline
+        def write_data_pipe_file(executable, pipe_name, pipeline_script_directory):
+            received_packages = []
+            for filename in os.listdir(executable.data_ingest_directory):
+                with open(executable.data_ingest_directory + filename, 'r') as f:
+                    received_packages.append(f.read())
+
+            pipe_json = {
+                "script_directory": pipeline_script_directory,
+                "script_path": executable.script_path,
+                "params": executable.context_instance,
+                "data": received_packages
+            }
+
+            if received_packages or os.path.getsize(pipe_name) == 0:
+                with open(pipe_name, 'w') as f:
+                    f.write(json.dumps(pipe_json))
+            else:
+                with open(pipe_name, 'r') as f:
+                    pipe_json = json.load(f)
 
 
-n_times_before_timeout = 100
-waittime_after_timeout = .05
+            return pipe_json
 
-# to run a script
-def xrun(tmp_directory, pipeline_script_directory, executable):
-    i = 0
-    while i < n_times_before_timeout:
-        if executable.is_waiting_for_upstream():
-            time.sleep(waittime_after_timeout)
-            i += 1
-        else:
-            break
+        file_pipe = FilePipe(tmp_directory, executable)
+        i = 0
+        while i < n_times_before_timeout:
+            if executable.is_waiting_for_upstream(file_pipe):
+                time.sleep(wait_time_between_tries)
+                i += 1
+            else:
+                break
 
-    if i == n_times_before_timeout:
-        print("failed script:")
-        print(str(executable))
-        exit(1)
+        if i == n_times_before_timeout:
+            print("failed script:")
+            print(str(executable))
+            return
 
-    file_pipe = FilePipe(tmp_directory, executable)
-    input_json = write_data_pipe_file(executable, file_pipe.into(), pipeline_script_directory)
+        input_json = write_data_pipe_file(executable, file_pipe.into(), pipeline_script_directory)
 
-    run_handler.run(input_json, file_pipe.out())
+        run_handler.run(input_json, file_pipe.out())
+            
+        with open(file_pipe.out(), 'r') as f:
+            data = f.read()
 
-    with open(file_pipe.out(), 'r') as f:
-        data = f.read()
-
-    file_pipe.clean()
-    executable.send(data)
-
-# write data to pipeline
-def write_data_pipe_file(executable, pipe_name, pipeline_script_directory):
-    received_packages = []
-    for filename in os.listdir(executable.data_ingest_directory):
-        with open(executable.data_ingest_directory + filename, 'r') as f:
-            received_packages.append(f.read())
-
-    pipe_json = {
-        "script_directory": pipeline_script_directory,
-        "script_path": executable.script_path,
-        "params": executable.context_instance,
-        "data": received_packages
-    }
-
-    with open(pipe_name, 'w') as f:
-        f.write(json.dumps(pipe_json))
-
-    return pipe_json
+        executable.send(data)

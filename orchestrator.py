@@ -172,10 +172,10 @@ class Pipe():
             f.write(data)
 
 class Pipeline():
-    def __init__(self, name, iteration, root_directory, context_json, blocks_json):
+    def __init__(self, name, iteration, script_directory, context_json, blocks_json):
         self.name = name
         self.iteration = iteration
-        self.root_directory = root_directory
+        self.script_directory = script_directory
         self.context_json = context_json
         self.context_instances = ContextHelper.parse(context_json)
         self.blocks_json = blocks_json
@@ -224,11 +224,11 @@ class Executor(threading.Thread):
     n_times_before_timeout = 20
     waittime_after_timeout = .1
 
-    def __init__(self, id, task_q, pipeline_root_directory):
+    def __init__(self, id, task_q, pipeline_script_directory):
         threading.Thread.__init__(self)
         self.id = id
         self.task_q = task_q
-        self.pipeline_root_directory = pipeline_root_directory
+        self.pipeline_script_directory = pipeline_script_directory
 
     def run(self):
         while not self.task_q.empty():
@@ -270,7 +270,7 @@ class Executor(threading.Thread):
                 received_packages.append(f.read())
 
         pipe_json = {
-            "root_directory": self.pipeline_root_directory,
+            "script_directory": self.pipeline_script_directory,
             "script_path": executable.script_path,
             "params": executable.context_instance,
             "data": received_packages
@@ -296,7 +296,7 @@ class ScriptOrchestrator():
         self.pipeline = Pipeline(
             name=data['name'], 
             iteration=data['iteration'],
-            root_directory=data['root_directory'],
+            script_directory=data['script_directory'],
             context_json=data.get('context', ContextHelper.empty_context),
             blocks_json=data.get('blocks', BlockHelper.no_blocks))
 
@@ -358,7 +358,7 @@ class ScriptOrchestrator():
         for task in self.executable_list:
             self.executable_q.put(task)
 
-        task_threads = [Executor(i, self.executable_q, self.pipeline.root_directory) for i in range(self.max_threads)]
+        task_threads = [Executor(i, self.executable_q, self.pipeline.script_directory) for i in range(self.max_threads)]
         for t in task_threads:
             t.start()
         

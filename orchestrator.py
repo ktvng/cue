@@ -1,5 +1,11 @@
 import json
 import sys
+import os
+import subprocess
+import hashlib
+import time
+import threading
+import random
 
 class ContextHelper():
     @classmethod
@@ -8,6 +14,8 @@ class ContextHelper():
         for key, val in context.items():
             if isinstance(val, list):
                 context_instances = cls.expand_parameter_list_into(context_instances, key, val)
+            elif isinstance(val, dict):
+                context_instances = cls.expand_parameter_range_into(context_instances, key, val)
             else:
                 for instance in context_instances:
                     instance.update(ContextHelper.flatten(key, val))
@@ -41,6 +49,15 @@ class ContextHelper():
         
         return expanded_context_instances
         
+    @classmethod
+    def expand_parameter_range_into(cls, context_instances, key, dct):
+        expanded_context_instances = []
+        for i in range(dct['start'], dct['end'], dct.get('step', 1)):
+            for instance in context_instances:
+                new_instance = instance.copy()
+                new_instance[key] = i
+                expanded_context_instances.append(new_instance)
+        return expanded_context_instances
 
     @classmethod
     def merge(cls, context_instances1, context_instances2):
@@ -88,7 +105,7 @@ class ScriptHelper():
         return scripts
 
 class Executable():
-    def __init__(self, context_instance, script_name, script_guid, script_path, block_name, iteration, pipeline_name):
+    def __init__(self, context_instance, script_name, script_guid, script_path, block_name, iteration, pipeline_name, tmp_directory):
         self.context_instance = context_instance
         self.script_name = script_name
         self.script_guid = script_guid
@@ -96,20 +113,35 @@ class Executable():
         self.block_name = block_name
         self.iteration = iteration
         self.pipeline_name = pipeline_name
+        self.hash = self.calculate_hash()
+        self.data_ingest_filename = tmp_directory + "/q" + self.hash + ".in"
+        with open(self.data_ingest_filename, 'w') as f:
+            f.write("")
 
-        self.received_packages = []
+        self.n_pipes_in = 0
         self.outgoing_pipes = []
+
+    def is_waiting_for_upstream(self):
+        with open(self.data_ingest_filename, 'r') as f:
+            return self.n_pipes_in < len(f.readlines())
+
+    def calculate_hash(self):
+        hasher = hashlib.sha1()
+        hasher.update(bytes(str(self), encoding='utf-8'))
+        hashcode = hasher.hexdigest()
+        
+        return hashcode
 
     def connect_upstream_of(self, executable):
         pipe = Pipe(self, executable)
         self.outgoing_pipes.append(pipe)
 
-    def receive(self, data, from_object):
-        self.received_packages.append(data)
-
     def send(self, data):
         for pipe in self.outgoing_pipes:
             pipe.transfer(data)
+
+    def clean(self):
+        os.remove(self.data_ingest_filename)
 
     def __str__(self):
         return f"{self.pipeline_name}({self.iteration})/{self.block_name}/{self.script_name}({self.script_guid}):{self.script_path}\n" + \
@@ -129,11 +161,13 @@ class Pipe():
     def __init__(self, pipe_from_obj, to_obj):
         self.pipe_from_obj = pipe_from_obj
         self.to_obj = to_obj
+        self.to_obj.n_pipes_in += 1 
         self.cached_data = "null"
 
     def transfer(self, data):
         self.cached_data = data
-        self.to_obj.receive(data, from_object=self.pipe_from_obj)
+        with open(self.to_obj.data_ingest_filename, 'a') as f:
+            f.write(data + "\n")
 
 class Pipeline():
     def __init__(self, name, iteration, root_directory, context_json, blocks_json):
@@ -164,9 +198,34 @@ class Script():
         self.context_json = context_json
         self.context_instances = ContextHelper.parse(context_json)
 
+class FilePipe():
+    def __init__(self, tmp_directory, executable):
+        self.name = tmp_directory + "pipe" + executable.hash
+        with open(self.into(), 'w') as f:
+            f.write("")
+
+        with open(self.out(), 'w') as f:
+            f.write("")
+
+    def into(self):
+        return self.name + ".in"
+    
+    def out(self):
+        return self.name + ".out"
+
+    def clean(self):
+        os.remove(self.into())
+        os.remove(self.out())
 
 class ScriptOrchestrator():
+    tmp_directory = "./.scriptorchestrator_tmp/"
+    n_times_before_timeout = 4
+    waitime_after_timeout = .4
+    max_threads = 8
+    
     def __init__(self):
+        if not os.path.exists(self.tmp_directory):
+            os.mkdir(self.tmp_directory)  
         self.executable_q = []
 
     def parse(self, data=None):
@@ -187,39 +246,99 @@ class ScriptOrchestrator():
         return self 
 
     def queue_tasks(self):
-        executables_index = {}
+        pipeline_level_executable_index = {}
 
         for block in self.pipeline.blocks:
-            for script in block.scripts:
-                context_instances = ContextHelper.merge(self.pipeline.context_instances, block.context_instances)
-                context_instances = ContextHelper.merge(context_instances, script.context_instances)
+            block_level_context_instances = ContextHelper.merge(self.pipeline.context_instances, block.context_instances)
 
-                for context_instance in context_instances:
-                    executable = Executable(
-                        context_instance,
-                        script.name,
-                        script.guid,
-                        script.path,
-                        block.name,
-                        self.pipeline.iteration,
-                        self.pipeline.name
-                    )
-                    
-                    if executable not in self.executable_q:
-                        self.executable_q.append(executable)
-                        if executables_index.get(script.guid, None) is None:
-                            executables_index[script.guid] = []
-                        executables_index[script.guid].append(executable)                    
+            for block_level_context_instance in block_level_context_instances:
+                block_level_executable_index = {}
 
-                        if script.pipe_from != -1:
-                            for upstream_executable in executables_index[script.pipe_from]:
-                                upstream_executable.connect_upstream_of(executable)
+                for script in block.scripts:
+                    script_level_context_instances = ContextHelper.merge([block_level_context_instance], script.context_instances)
+
+                    for context_instance in script_level_context_instances:
+                        executable = Executable(
+                            context_instance,
+                            script.name,
+                            script.guid,
+                            script.path,
+                            block.name,
+                            self.pipeline.iteration,
+                            self.pipeline.name,
+                            self.tmp_directory,
+                        )
+                        
+                        if executable not in self.executable_q:
+                            self.executable_q.append(executable)
+                            if pipeline_level_executable_index.get(script.guid, None) is None:
+                                pipeline_level_executable_index[script.guid] = []
+                            pipeline_level_executable_index[script.guid].append(executable)                    
+                            
+                            if block_level_executable_index.get(script.guid, None) is None:
+                                block_level_executable_index[script.guid] = []
+                            block_level_executable_index[script.guid].append(executable)
+
+                            if script.pipe_from != -1:
+                                if script.pipe_from in block_level_executable_index:
+                                    for upstream_executable in block_level_executable_index[script.pipe_from]:
+                                        upstream_executable.connect_upstream_of(executable)
+                                else:
+                                    for upstream_executable in pipeline_level_executable_index[script.pipe_from]:
+                                        upstream_executable.connect_upstream_of(executable)
+
 
         return self
 
+    def write_data_pipe_file(self, executable, pipe_name):
+        with(open(executable.data_ingest_filename, 'r')) as f:
+            received_packages = list(map(lambda x: x.strip(), f.readlines()))
+
+        pipe_json = {
+            "root_directory": self.pipeline.root_directory,
+            "script_path": executable.script_path,
+            "params": executable.context_instance,
+            "data": received_packages
+        }
+    
+        with open(pipe_name, 'w') as f:
+            f.write(json.dumps(pipe_json))
+
+    def run_executable(self, executable):
+        i = 0
+        while i < self.n_times_before_timeout:
+            if executable.is_waiting_for_upstream():
+                print("waiting for pipe")
+                time.sleep(self.waitime_after_timeout)
+                i += 1
+            else:
+                break
+
+        if i == self.n_times_before_timeout:
+            print("failed script:")
+            print(str(executable))
+            exit(1)
+
+        file_pipe = FilePipe(self.tmp_directory, executable)
+        self.write_data_pipe_file(executable, file_pipe.into())
+
+        bash_cmd = f"python3 run_handler.py -i {file_pipe.into()} -o {file_pipe.out()}"
+        subprocess.run(bash_cmd.split())
+
+        with open(file_pipe.out(), 'r') as f:
+            data = f.read()
+
+        file_pipe.clean()
+        executable.send(data)
+
     def run(self):
         for executable in self.executable_q:
-            sys.path.insert(1, self.pipeline.root_directory)
-            script_exe = __import__(executable.script_path)
-            data = script_exe.run(executable.context_instance, executable.received_packages)
-            executable.send(data)
+            # t = threading.Thread(target=self.run_executable, args=(executable,))
+            # t.start() 
+            self.run_executable(executable)
+
+    def clean(self):
+        for executable in self.executable_q:
+            executable.clean()
+
+        os.removedirs(self.tmp_directory)

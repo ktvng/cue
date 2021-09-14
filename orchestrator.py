@@ -28,7 +28,7 @@ class ContextHelper():
     # that represent the parameters of the flattened context
     @classmethod
     def parse(cls, 
-        context : dict          # the json defining the context
+        context : dict,         # the json defining the context
             ) -> list:          # returns alist containing simple dicts 
                                 #   (vals are str/int/float...)
 
@@ -530,17 +530,89 @@ class FilePipe():
 #                               be run as part of the pipeline  
 #   data:                   the json representation of the pipeline
 class ScriptOrchestrator():
-    tmp_directory = "./.scriptorchestrator_tmp/"
+    tmp_directory = "./.orchestrator_temp/"
     default_n_times_before_timeout = 10
     default_wait_time_between_tries = .05
     default_max_processes = 4
    
-    # Initialze the orchestrator by creating the temporary directory
-    def __init__(self):
+    # Initialze the orchestrator
+    def __init__(self, using_directory=None) -> None:
+        self.tmp_directory = ScriptOrchestrator.tmp_directory if using_directory is None else using_directory
+
         if not os.path.exists(self.tmp_directory):
             os.mkdir(self.tmp_directory)  
         self.executable_list = []
 
+    # Returns True if [string] encodes a definition
+    def _is_definition(self, 
+        key : str,              # some key in a context dict
+        val : str               # the value associated with [key] 
+            ) -> bool:
+
+        return key[0] == "$" and val == "$definitions"
+
+    def _unpack_existing_definition(self, 
+        input_context : dict,   # the context containing the definiton
+        key : str,              # the key defining the definition 
+        definitions : dict      # the dict of definitions to lookup the key in
+            ) -> None:
+
+        del input_context[key]
+        if key not in definitions:
+            print(f"exception: definition {key} referenced but not supplied in definitions")
+            exit(1)
+        
+        input_context[key[1:]] = definitions[key]
+
+    # Unpack all definitions in some [input_context] by searching the [definitions] dict
+    # for the key supplied
+    def _unpack_all_definitions_in(self, 
+        input_context : dict,   # the context to unpack definitions of
+        definitions : dict      # the dict of definitions used for lookup
+            ) -> None:
+
+        keys_to_unpack = []
+        for key, val in input_context.items():
+            if self._is_definition(key, val):
+                keys_to_unpack.append(key)
+
+        for key in keys_to_unpack:
+            self._unpack_existing_definition(input_context, key, definitions)
+
+    # Recursively unpack all definitions which may be contained in a json dict
+    def _unpack_definitions_in_json_dict(self,
+        json_object : dict,     # the json object representation
+        definitions : dict      # the dict of definitions used for lookup
+            ) -> None:
+
+        self._unpack_all_definitions_in(
+            json_object.get('context', ContextHelper.empty_context), definitions)
+
+        for elem in json_object.values():
+            if isinstance(elem, dict):
+                self._unpack_definitions_in_json_dict(elem, definitions)
+            elif isinstance(elem, list):
+                self._unpack_definitions_in_json_list(elem, definitions)
+
+    # Recursively unpack all definitions which may be contained in a json list
+    def _unpack_definitions_in_json_list(self,
+        json_object : list,     # the json object representation
+        definitions : dict      # the dict of definitions used for lookup
+            ) -> None:
+
+        for elem in json_object:
+            if isinstance(elem, dict):
+                self._unpack_definitions_in_json_dict(elem, definitions)
+            elif isinstance(elem, list):
+                self._unpack_definitions_in_json_list(elem, definitions)
+
+    # Unpack all definitions contained in [input_json]
+    def _preprocess_definitions(self,
+        input_json : dict       # the json representing the pipeline
+            ) -> None:
+
+        self._unpack_definitions_in_json_dict(input_json, input_json.get('definitions', {}))
+            
     # Parse [data] a json representation of a pipeline, or use [self.data] a json
     # has already been read
     def parse(self, 
@@ -548,6 +620,9 @@ class ScriptOrchestrator():
             ) -> ScriptOrchestrator:
 
         data = self.data if data is None else data
+
+        self._preprocess_definitions(data)
+
         self.pipeline = Pipeline(
             name=data['name'], 
             iteration=data['iteration'],

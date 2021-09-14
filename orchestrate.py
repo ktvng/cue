@@ -5,7 +5,7 @@ from orchestrator import ScriptOrchestrator
 def main(argv):
     # -r <root> -i [pipeline] -c 
     try:
-        opts, args = getopt.getopt(argv, "i:cn:w:p:f:", ['input=', 'n_times_before_timeout=', 'wait_time_between_tries=', 'max_processes=', 'from=', 'clean'])
+        opts, args = getopt.getopt(argv, "i:cn:w:p:f:d:", ['input=', 'n_times_before_timeout=', 'wait_time_between_tries=', 'max_processes=', 'from=', 'clean', 'dir='])
 
     except:
         exit(2)
@@ -13,6 +13,7 @@ def main(argv):
     options = {}
     path_to_pipeline_json = None
     purge = False
+    tmp_dir = None
 
     for opt, arg in opts:
         if opt in ['-i', '--input'] :
@@ -27,16 +28,18 @@ def main(argv):
             options['from'] = int(arg)
         elif opt in ['--clean']:
             purge = True
+        elif opt in ['-d', '--dir']:
+            tmp_dir = arg + "/"
 
     if path_to_pipeline_json is None:
         print("exception: expected json filename with [-i]")
         exit(2)
 
     if purge:
-        ScriptOrchestrator().purge()
+        ScriptOrchestrator(using_directory=tmp_dir).purge()
         exit(0)
 
-    so = ScriptOrchestrator().read(path_to_pipeline_json).queue_tasks().run(given=options)
+    so = ScriptOrchestrator(using_directory=tmp_dir).read(path_to_pipeline_json).queue_tasks().run(given=options)
     so.clean()
     
 if __name__ == "__main__":

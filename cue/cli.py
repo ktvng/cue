@@ -1,6 +1,6 @@
 import getopt
 import sys
-from cue.orchestrator import ScriptOrchestrator
+from cue.orchestrator import Orchestrator 
 
 def run():
     main(sys.argv[1:])
@@ -56,8 +56,8 @@ def main(argv):
         exit(2)
 
     if purge:
-        ScriptOrchestrator(using_directory=tmp_dir, verbose=verbose).purge()
+        Orchestrator(using_directory=tmp_dir, verbose=verbose).purge()
         exit(0)
 
-    so = ScriptOrchestrator(using_directory=tmp_dir, verbose=verbose).read(yaml_file=path_to_pipeline_json).queue_tasks().run(given=options)
+    so = Orchestrator(using_directory=tmp_dir, verbose=verbose).read(yaml_file=path_to_pipeline_json).queue_tasks().run(given=options)
     so.clean()

@@ -1,14 +1,14 @@
 import json
 import sys
 import os
-import subprocess
 import hashlib
 import time
-import threading
+import multiprocessing
 import queue
 import random
 import shutil
 import run_handler
+import functools
 
 class ContextHelper():
     @classmethod
@@ -219,72 +219,10 @@ class FilePipe():
         os.remove(self.into())
         os.remove(self.out())
 
-class Executor(threading.Thread):
-    tmp_directory = "./.scriptorchestrator_tmp/"
-    n_times_before_timeout = 20
-    waittime_after_timeout = .1
-
-    def __init__(self, id, task_q, pipeline_script_directory):
-        threading.Thread.__init__(self)
-        self.id = id
-        self.task_q = task_q
-        self.pipeline_script_directory = pipeline_script_directory
-
-    def run(self):
-        while not self.task_q.empty():
-            try:
-                executable = self.task_q.get()
-            except:
-                return
-
-            i = 0
-            while i < self.n_times_before_timeout:
-                if executable.is_waiting_for_upstream():
-                    time.sleep(self.waittime_after_timeout)
-                    i += 1
-                else:
-                    break
-
-            if i == self.n_times_before_timeout:
-                print("failed script:")
-                print(str(executable))
-                exit(1)
-
-            file_pipe = FilePipe(self.tmp_directory, executable)
-            input_json = self.write_data_pipe_file(executable, file_pipe.into())
-
-            # bash_cmd = f"python3 run_handler.py -i {file_pipe.into()} -o {file_pipe.out()}"
-            # subprocess.run(bash_cmd.split())
-            run_handler.run(input_json, file_pipe.out())
-
-            with open(file_pipe.out(), 'r') as f:
-                data = f.read()
-
-            file_pipe.clean()
-            executable.send(data)
-
-    def write_data_pipe_file(self, executable, pipe_name):
-        received_packages = []
-        for filename in os.listdir(executable.data_ingest_directory):
-            with open(executable.data_ingest_directory + filename, 'r') as f:
-                received_packages.append(f.read())
-
-        pipe_json = {
-            "script_directory": self.pipeline_script_directory,
-            "script_path": executable.script_path,
-            "params": executable.context_instance,
-            "data": received_packages
-        }
-    
-        with open(pipe_name, 'w') as f:
-            f.write(json.dumps(pipe_json))
-
-        return pipe_json
-
 class ScriptOrchestrator():
     tmp_directory = "./.scriptorchestrator_tmp/"
-    max_threads = 16
-    
+    max_processes = 8
+   
     def __init__(self):
         if not os.path.exists(self.tmp_directory):
             os.mkdir(self.tmp_directory)  
@@ -354,16 +292,9 @@ class ScriptOrchestrator():
 
     def run(self):
         start = time.time()
-
-        for task in self.executable_list:
-            self.executable_q.put(task)
-
-        task_threads = [Executor(i, self.executable_q, self.pipeline.script_directory) for i in range(self.max_threads)]
-        for t in task_threads:
-            t.start()
-        
-        for t in task_threads:
-            t.join()
+        my_xrun = functools.partial(xrun, self.tmp_directory, self.pipeline.script_directory)
+        with multiprocessing.Pool(self.max_processes) as p:
+            p.map(my_xrun, self.executable_list)
 
         print(time.time() - start)
 
@@ -372,3 +303,49 @@ class ScriptOrchestrator():
             executable.clean()
 
         os.removedirs(self.tmp_directory)
+
+n_times_before_timeout = 100
+waittime_after_timeout = .05
+
+def xrun(tmp_directory, pipeline_script_directory, executable):
+    i = 0
+    while i < n_times_before_timeout:
+        if executable.is_waiting_for_upstream():
+            time.sleep(waittime_after_timeout)
+            i += 1
+        else:
+            break
+
+    if i == n_times_before_timeout:
+        print("failed script:")
+        print(str(executable))
+        exit(1)
+
+    file_pipe = FilePipe(tmp_directory, executable)
+    input_json = write_data_pipe_file(executable, file_pipe.into(), pipeline_script_directory)
+
+    run_handler.run(input_json, file_pipe.out())
+
+    with open(file_pipe.out(), 'r') as f:
+        data = f.read()
+
+    file_pipe.clean()
+    executable.send(data)
+
+def write_data_pipe_file(executable, pipe_name, pipeline_script_directory):
+    received_packages = []
+    for filename in os.listdir(executable.data_ingest_directory):
+        with open(executable.data_ingest_directory + filename, 'r') as f:
+            received_packages.append(f.read())
+
+    pipe_json = {
+        "script_directory": pipeline_script_directory,
+        "script_path": executable.script_path,
+        "params": executable.context_instance,
+        "data": received_packages
+    }
+
+    with open(pipe_name, 'w') as f:
+        f.write(json.dumps(pipe_json))
+
+    return pipe_json

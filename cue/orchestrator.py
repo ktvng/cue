@@ -53,7 +53,7 @@ class Orchestrator():
         self.executable_list = []
 
         if self.verbose:
-            vprint("STATUS:", "Started Pipeline")
+            vprint("STATUS:", "Initialized")
 
     # Returns True if [string] encodes a definition
     def _is_definition(self, 
@@ -281,6 +281,8 @@ class Orchestrator():
     # Remove full temporary directory
     def purge(self) -> None:
         shutil.rmtree(self.tmp_directory)
+        if self.verbose:
+            vprint("STATUS:", "Finished Cleaning")
 
     # to run a script
     def _run(self, 

@@ -3,3 +3,5 @@ __pycache__
 .cue
 demo/
 *.egg-info
+build/
+dist/

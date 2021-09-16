@@ -9,10 +9,10 @@ DOCLINES = (__doc__ or '').split('\n')
 from setuptools import find_packages, setup
 
 setup(
-    name='cue',
+    name='py-cue',
     package_dir={'cue/cue': 'cue'},
     packages=find_packages(include=['cue']),
-    version='0.0.1',
+    version='0.1.0',
     description=DOCLINES[0],
     long_description="\n".join(DOCLINES[2:]),
     project_urls={
@@ -21,6 +21,7 @@ setup(
     author='ktvng',
     license='MIT',
     python_requires='>=3.8',
+    install_requires=['pyyaml>=5.2'],
     entry_points={
         'console_scripts': {
             'cue=cue.cli:run'

@@ -11,6 +11,7 @@ def run():
 
     parser.add_argument('-n', '--n_times_before_timeout',
         nargs='?', 
+        metavar='N',
         type=int, 
         help='number of times before timeout')
 
@@ -40,8 +41,9 @@ def run():
         help='run verbose with status messages printed')
 
     parser.add_argument('-d', '--dir',
-        nargs=1,
+        nargs='?',
         type=str,
+        metavar='PATH',
         help='use named path instead of default for temporary directory')
 
     args = parser.parse_args()
@@ -53,10 +55,10 @@ def run():
 
     options = { k : v for k, v in vargs.items() if v is not None }
 
+    so = Orchestrator(using_directory=tmp_dir, verbose=is_verbose)
     if should_purge:
-        Orchestrator(using_directory=tmp_dir, verbose=is_verbose).purge()
+        so.purge()
         exit(0)
 
-    so = Orchestrator(using_directory=tmp_dir, verbose=is_verbose).read(yaml_file=path_to_pipeline_json).queue_tasks().run(given=options)
+    so.read(yaml_file=path_to_pipeline_json).queue_tasks().run(given=options)
     so.clean()
-    print(vars(args))
